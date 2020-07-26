@@ -2065,11 +2065,11 @@ export class PostgresQueryRunner extends BaseQueryRunner implements QueryRunner 
         // You can not modify the array type. You need to edit the enum itself.
         if (column.isArray) {
             // Find the information about the array type
-            const typeResult = await this.query(`select "typelem" from pg_type where "typname" = '${udtName}';`);
+            const typeResult = await this.query(`SELECT "typelem" FROM pg_type WHERE "typname" = $1`, [udtName]);
 
             const typelem = typeResult[0]["typelem"];
             // Get with the oid of the enum array type the enum type
-            const baseTypeNameResult = await this.query(`select "typname" from pg_type where oid = ${typelem}`);
+            const baseTypeNameResult = await this.query(`SELECT "typname" FROM pg_type WHERE oid = $1`, [typelem]);
 
             const baseTypeName = baseTypeNameResult[0]["typname"];
 
