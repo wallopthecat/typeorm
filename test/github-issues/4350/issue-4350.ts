@@ -14,7 +14,7 @@ describe("github issues > #4350 Array of enums column doesn't work at all", () =
             entities: [__dirname + "/entity/Post1{.js,.ts}"],
             schemaCreate: true,
             dropSchema: true,
-            enabledDrivers: ["postgres", "cockroachdb"]
+            enabledDrivers: ["postgres"]
         });
 
         await Promise.all(connections.map(async connection => {
@@ -35,7 +35,7 @@ describe("github issues > #4350 Array of enums column doesn't work at all", () =
             entities: [__dirname + "/entity/Post2{.js,.ts}"],
             schemaCreate: true,
             dropSchema: false,
-            enabledDrivers: ["postgres", "cockroachdb"]
+            enabledDrivers: ["postgres"]
         });
 
         await Promise.all(connections.map(async connection => {
