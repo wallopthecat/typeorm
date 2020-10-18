@@ -727,50 +727,6 @@ export class PostgresQueryRunner extends BaseQueryRunner implements QueryRunner 
                 downQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" TYPE ${this.driver.createFullType(oldColumn)}`));
             }
 
-            if (
-                (newColumn.type === "enum" || newColumn.type === "simple-enum")
-                && (oldColumn.type === "enum" || oldColumn.type === "simple-enum")
-                && !OrmUtils.isArraysEqual(newColumn.enum!, oldColumn.enum!)
-            ) {
-                const enumName = this.buildEnumName(table, newColumn);
-                const arraySuffix = newColumn.isArray ? "[]" : "";
-                const oldEnumName = this.buildEnumName(table, newColumn, true, false, true);
-                const oldEnumNameWithoutSchema = this.buildEnumName(table, newColumn, false, false, true);
-                const enumTypeBeforeColumnChange = await this.getEnumTypeName(table, oldColumn);
-
-                // rename old ENUM
-                upQueries.push(new Query(`ALTER TYPE "${enumTypeBeforeColumnChange.enumTypeSchema}"."${enumTypeBeforeColumnChange.enumTypeName}" RENAME TO ${oldEnumNameWithoutSchema}`));
-                downQueries.push(new Query(`ALTER TYPE ${oldEnumName} RENAME TO  "${enumTypeBeforeColumnChange.enumTypeName}"`));
-
-                // create new ENUM
-                upQueries.push(this.createEnumTypeSql(table, newColumn));
-                downQueries.push(this.dropEnumTypeSql(table, oldColumn));
-
-                // if column have default value, we must drop it to avoid issues with type casting
-                if (newColumn.default !== null && newColumn.default !== undefined) {
-                    upQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" DROP DEFAULT`));
-                    downQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" SET DEFAULT ${newColumn.default}`));
-                }
-
-                // build column types
-                const upType = `${enumName}${arraySuffix} USING "${newColumn.name}"::"text"::${enumName}${arraySuffix}`;
-                const downType = `${oldEnumName}${arraySuffix} USING "${newColumn.name}"::"text"::${oldEnumName}${arraySuffix}`;
-
-                // update column to use new type
-                upQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" TYPE ${upType}`));
-                downQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" TYPE ${downType}`));
-
-                // if column have default value and we dropped it before, we must bring it back
-                if (newColumn.default !== null && newColumn.default !== undefined) {
-                    upQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" SET DEFAULT ${newColumn.default}`));
-                    downQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" DROP DEFAULT`));
-                }
-
-                // remove old ENUM
-                upQueries.push(this.dropEnumTypeSql(table, newColumn, oldEnumName));
-                downQueries.push(this.createEnumTypeSql(table, oldColumn, oldEnumName));
-            }
-
             if (oldColumn.isNullable !== newColumn.isNullable) {
                 if (newColumn.isNullable) {
                     upQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${oldColumn.name}" DROP NOT NULL`));
@@ -778,6 +734,77 @@ export class PostgresQueryRunner extends BaseQueryRunner implements QueryRunner 
                 } else {
                     upQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${oldColumn.name}" SET NOT NULL`));
                     downQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${oldColumn.name}" DROP NOT NULL`));
+                }
+            }
+
+            if (
+                (newColumn.type === "enum" || newColumn.type === "simple-enum")
+                && (oldColumn.type === "enum" || oldColumn.type === "simple-enum")
+                && !OrmUtils.isArraysEqual(newColumn.enum!, oldColumn.enum!)
+            ) {
+
+                if (oldColumn.isArray && !newColumn.isArray) {
+                    // enum[] -> enum
+                    if (newColumn.isNullable) {
+                        upQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${oldColumn.name}" TYPE ${this.buildEnumName(table, newColumn, true, false, false)} USING "${oldColumn.name}"[1]::${this.buildEnumName(table, newColumn, true, false, false)}`));
+                        if (oldColumn.isNullable) {
+                            downQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${oldColumn.name}" TYPE ${this.buildEnumName(table, oldColumn, true, false, false)}[] USING ARRAY["${oldColumn.name}"]`))
+                        } else {
+                            const { downQueries } = await this.getDropColumnQueries(tableOrName, newColumn);
+                            downQueries.push(...downQueries);
+                        }
+                    } else {
+                        // No migration strategic. There could be values with empty arrays. Therefore the new column needs to be nullable.
+                        await this.dropColumn(tableOrName, oldColumn);
+                        await this.addColumn(tableOrName, newColumn);
+                    }
+                } else if (!oldColumn.isArray && newColumn.isArray) {
+                    // enum -> enum[]
+                    upQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${oldColumn.name}" TYPE ${this.buildEnumName(table, newColumn, true, false, false)}[] USING ARRAY["${oldColumn.name}"]`));
+                    if (oldColumn.isNullable || newColumn.isNullable) {
+                        const { downQueries } = await this.getDropColumnQueries(tableOrName, oldColumn);
+                        downQueries.push(...downQueries);
+                    } else {
+                        downQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${oldColumn.name}" TYPE ${this.buildEnumName(table, newColumn, true, false, false)} USING "${oldColumn.name}"[1]`));
+                    }
+                } else {
+                    const enumName = this.buildEnumName(table, newColumn);
+                    const arraySuffix = newColumn.isArray ? "[]" : "";
+                    const oldEnumName = this.buildEnumName(table, newColumn, true, false, true);
+                    const oldEnumNameWithoutSchema = this.buildEnumName(table, newColumn, false, false, true);
+                    const enumTypeBeforeColumnChange = await this.getEnumTypeName(table, oldColumn);
+
+                    // rename old ENUM
+                    upQueries.push(new Query(`ALTER TYPE "${enumTypeBeforeColumnChange.enumTypeSchema}"."${enumTypeBeforeColumnChange.enumTypeName}" RENAME TO ${oldEnumNameWithoutSchema}`));
+                    downQueries.push(new Query(`ALTER TYPE ${oldEnumName} RENAME TO  "${enumTypeBeforeColumnChange.enumTypeName}"`));
+
+                    // create new ENUM
+                    upQueries.push(this.createEnumTypeSql(table, newColumn));
+                    downQueries.push(this.dropEnumTypeSql(table, oldColumn));
+
+                    // if column have default value, we must drop it to avoid issues with type casting
+                    if (newColumn.default !== null && newColumn.default !== undefined) {
+                        upQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" DROP DEFAULT`));
+                        downQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" SET DEFAULT ${newColumn.default}`));
+                    }
+
+                    // build column types
+                    const upType = `${enumName}${arraySuffix} USING "${newColumn.name}"::"text"::${enumName}${arraySuffix}`;
+                    const downType = `${oldEnumName}${arraySuffix} USING "${newColumn.name}"::"text"::${oldEnumName}${arraySuffix}`;
+
+                    // update column to use new type
+                    upQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" TYPE ${upType}`));
+                    downQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" TYPE ${downType}`));
+
+                    // if column have default value and we dropped it before, we must bring it back
+                    if (newColumn.default !== null && newColumn.default !== undefined) {
+                        upQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" SET DEFAULT ${newColumn.default}`));
+                        downQueries.push(new Query(`ALTER TABLE ${this.escapePath(table)} ALTER COLUMN "${newColumn.name}" DROP DEFAULT`));
+                    }
+
+                    // remove old ENUM
+                    upQueries.push(this.dropEnumTypeSql(table, newColumn, oldEnumName));
+                    downQueries.push(this.createEnumTypeSql(table, oldColumn, oldEnumName));
                 }
             }
 
@@ -898,10 +925,7 @@ export class PostgresQueryRunner extends BaseQueryRunner implements QueryRunner 
         }
     }
 
-    /**
-     * Drops column in the table.
-     */
-    async dropColumn(tableOrName: Table|string, columnOrName: TableColumn|string): Promise<void> {
+    async getDropColumnQueries(tableOrName: Table|string, columnOrName: TableColumn|string): Promise<{ upQueries: Query[], downQueries: Query[], clonedTable: Table, table: Table, column: TableColumn }> {
         const table = tableOrName instanceof Table ? tableOrName : await this.getCachedTable(tableOrName);
         const column = columnOrName instanceof TableColumn ? columnOrName : table.findColumnByName(columnOrName);
         if (!column)
@@ -968,6 +992,21 @@ export class PostgresQueryRunner extends BaseQueryRunner implements QueryRunner 
                 downQueries.push(this.createEnumTypeSql(table, column, escapedEnumName));
             }
         }
+
+        return {
+            upQueries,
+            downQueries,
+            clonedTable,
+            table,
+            column
+        }
+    }
+
+    /**
+     * Drops column in the table.
+     */
+    async dropColumn(tableOrName: Table|string, columnOrName: TableColumn|string): Promise<void> {
+        const { upQueries, downQueries, clonedTable, table, column } = await this.getDropColumnQueries(tableOrName, columnOrName);
 
         await this.executeQueries(upQueries, downQueries);
 
